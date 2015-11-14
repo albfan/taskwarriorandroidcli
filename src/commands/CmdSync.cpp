@@ -58,7 +58,6 @@ CmdSync::CmdSync ()
 int CmdSync::execute (std::string& output)
 {
   int status = 0;
-#ifdef HAVE_LIBGNUTLS
   std::stringstream out;
 
   Filter filter;
@@ -82,8 +81,9 @@ int CmdSync::execute (std::string& output)
 
   // If no server is set up, quit.
   std::string connection = context.config.get ("taskd.server");
-  if (connection == "" ||
-      connection.rfind (':') == std::string::npos)
+  std::string socket = context.config.get ("taskd.socket");
+  bool local_socket_conn = socket != "";
+  if (!local_socket_conn && (connection == "" || connection.rfind (':') == std::string::npos))
     throw std::string (STRING_CMD_SYNC_NO_SERVER);
 
   // Obtain credentials.
@@ -95,35 +95,6 @@ int CmdSync::execute (std::string& output)
   split (credentials, credentials_string, "/");
   if (credentials.size () != 3)
     throw std::string (STRING_CMD_SYNC_BAD_CRED);
-
-  // This was a Boolean value in 2.3.0, and is a tri-state since 2.4.0.
-  std::string trust_value = context.config.get ("taskd.trust");
-  if (trust_value != "strict" &&
-      trust_value != "ignore hostname" &&
-      trust_value != "allow all")
-    throw std::string (STRING_CMD_SYNC_TRUST_OBS);
-
-  enum TLSClient::trust_level trust = TLSClient::strict;
-  if (trust_value  == "allow all")
-    trust = TLSClient::allow_all;
-  else if (trust_value == "ignore hostname")
-    trust = TLSClient::ignore_hostname;
-
-  // CA must exist, if provided.
-  File ca (context.config.get ("taskd.ca"));
-  if (ca._data != "" && ! ca.exists ())
-    throw std::string (STRING_CMD_SYNC_BAD_CA);
-
-  if (trust == TLSClient::allow_all && ca._data != "")
-    throw std::string (STRING_CMD_SYNC_TRUST_CA);
-
-  File certificate (context.config.get ("taskd.certificate"));
-  if (! certificate.exists ())
-    throw std::string (STRING_CMD_SYNC_BAD_CERT);
-
-  File key (context.config.get ("taskd.key"));
-  if (! key.exists ())
-    throw std::string (STRING_CMD_SYNC_BAD_KEY);
 
   // If this is a first-time initialization, send pending.data and
   // completed.data, but not backlog.data.
@@ -183,7 +154,50 @@ int CmdSync::execute (std::string& output)
   signal (SIGUSR2,   SIG_IGN);
 
   Msg response;
-  if (send (connection, ca._data, certificate._data, key._data, trust, request, response))
+  bool send_result = false;
+  if (!local_socket_conn) {
+#ifdef HAVE_LIBGNUTLS
+    // This was a Boolean value in 2.3.0, and is a tri-state since 2.4.0.
+    std::string trust_value = context.config.get ("taskd.trust");
+    if (trust_value != "strict" &&
+      trust_value != "ignore hostname" &&
+      trust_value != "allow all")
+      throw std::string (STRING_CMD_SYNC_TRUST_OBS);
+
+    enum TLSClient::trust_level trust = TLSClient::strict;
+    if (trust_value  == "allow all")
+      trust = TLSClient::allow_all;
+    else if (trust_value == "ignore hostname")
+      trust = TLSClient::ignore_hostname;
+
+    // CA must exist, if provided.
+    File ca (context.config.get ("taskd.ca"));
+    if (ca._data != "" && ! ca.exists ())
+      throw std::string (STRING_CMD_SYNC_BAD_CA);
+
+    if (trust == TLSClient::allow_all && ca._data != "")
+      throw std::string (STRING_CMD_SYNC_TRUST_CA);
+
+    File certificate (context.config.get ("taskd.certificate"));
+    if (! certificate.exists ())
+      throw std::string (STRING_CMD_SYNC_BAD_CERT);
+
+    File key (context.config.get ("taskd.key"));
+    if (! key.exists ())
+      throw std::string (STRING_CMD_SYNC_BAD_KEY);
+
+    send_result = send (connection, ca._data, certificate._data, key._data, trust, request, response);
+#else
+    // Normal socket connection but not supported platform
+    throw std::string (STRING_CMD_SYNC_NO_TLS);
+#endif
+  } else {
+    out << format ("Will sync using local socket: {1}", socket)
+        << "\n";
+    send_result = sendLocal(socket, request, response);
+  }
+
+  if (send_result)
   {
     std::string code = response.get ("code");
     if (code == "200")
@@ -337,13 +351,36 @@ int CmdSync::execute (std::string& output)
   signal (SIGUSR1,   SIG_DFL);
   signal (SIGUSR2,   SIG_DFL);
 
-#else
-  // Without GnuTLS found at compile time, there is no working sync command.
-  throw std::string (STRING_CMD_SYNC_NO_TLS);
-#endif
   return status;
 }
 
+bool CmdSync::sendLocal (
+  const std::string& to,
+  const Msg& request,
+  Msg& response)
+{
+  try
+  {
+    LocalSocketClient client;
+
+    client.connect (to);
+    client.send (request.serialize () + "\n");
+
+    std::string incoming;
+    client.recv (incoming);
+
+    response.parse (incoming);
+    return true;
+  }
+
+  catch (std::string& error)
+  {
+    context.error (error);
+  }
+
+  // Indicate message failed.
+  return false;
+}
 #ifdef HAVE_LIBGNUTLS
 ////////////////////////////////////////////////////////////////////////////////
 bool CmdSync::send (

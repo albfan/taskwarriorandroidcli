@@ -26,9 +26,23 @@
 #ifndef INCLUDED_TLSCLIENT
 #define INCLUDED_TLSCLIENT
 
+#include <string>
+class LocalSocketClient
+{
+public:
+  LocalSocketClient ();
+  ~LocalSocketClient ();
+
+  void connect (const std::string&);
+
+  void send (const std::string&);
+  void recv (std::string&);
+
+private:
+  int fd;
+};
 #ifdef HAVE_LIBGNUTLS
 
-#include <string>
 #include <gnutls/gnutls.h>
 
 class TLSClient

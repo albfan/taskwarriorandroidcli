@@ -26,8 +26,6 @@
 
 #include <cmake.h>
 
-#ifdef HAVE_LIBGNUTLS
-
 #include <TLSClient.h>
 #include <iostream>
 #include <unistd.h>
@@ -44,12 +42,132 @@
 #endif
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netdb.h>
-#include <gnutls/x509.h>
-#include <text.h>
-#include <i18n.h>
 
+#include <i18n.h>
+#include <text.h>
 #define MAX_BUF 16384
+
+
+LocalSocketClient::LocalSocketClient ()
+{
+  fd = 0;
+}
+
+LocalSocketClient::~LocalSocketClient ()
+{
+  if (fd)
+  {
+    shutdown (fd, SHUT_RDWR);
+    close (fd);
+    fd = 0;
+  }
+}
+
+void LocalSocketClient::connect (const std::string& host)
+{
+  struct sockaddr_un serv_addr;
+  memset(&serv_addr, 0, sizeof(serv_addr));
+  serv_addr.sun_family = AF_UNIX;
+  serv_addr.sun_path[0] = '\0';
+  strncpy(serv_addr.sun_path+1, host.c_str(), host.length());
+  fd = socket(PF_UNIX, SOCK_STREAM, 0);
+  if (-1 == fd)
+  {
+    // Failed to connect
+    throw format (STRING_CMD_SYNC_CONNECT, host, "Local");
+  }
+  int err = ::connect(fd, (struct sockaddr*) &serv_addr, offsetof(struct sockaddr_un, sun_path) + 1 + host.length());
+  if (0 != err)
+  {
+    // Failed to connect
+    throw format ("Failed to connect to local socket: {1}", ::strerror (err) );
+  }
+}
+
+void LocalSocketClient::send (const std::string& data)
+{
+  std::string packet = "XXXX" + data;
+
+  // Encode the length.
+  unsigned long l = packet.length ();
+  packet[0] = l >>24;
+  packet[1] = l >>16;
+  packet[2] = l >>8;
+  packet[3] = l;
+
+  unsigned int total = 0;
+  unsigned int remaining = packet.length ();
+
+  while (total < packet.length ())
+  {
+    int err;
+    err = ::send (fd, packet.c_str () + total, remaining, 0);
+
+    if (err < 0)
+    {
+      throw format ("Failed to send data: {1}", ::strerror (err) );
+    }
+
+    total     += (unsigned int) err;
+    remaining -= (unsigned int) err;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void LocalSocketClient::recv (std::string& data)
+{
+  data = "";          // No appending of data.
+  int received = 0;
+
+  // Get the encoded length.
+  unsigned char header[4] = {0};
+  received = ::recv (fd, header, 4, 0);
+
+  if (0 > received)
+  {
+    throw format ("Failed to receive data: {1}", ::strerror (received) );
+  }
+
+  int total = received;
+
+  // Decode the length.
+  unsigned long expected = (header[0]<<24) |
+                           (header[1]<<16) |
+                           (header[2]<<8) |
+                            header[3];
+
+  // Arbitrary buffer size.
+  char buffer[MAX_BUF];
+
+  // Keep reading until no more data.  Concatenate chunks of data if a) the
+  // read was interrupted by a signal, and b) if there is more data than
+  // fits in the buffer.
+  do
+  {
+    received = ::recv (fd, buffer, MAX_BUF - 1, 0);
+
+    // Other end closed the connection.
+    if (received == 0)
+    {
+      break;
+    }
+
+    if (received < 0)
+      throw format ("Failed to receive data: {1}", ::strerror (received) );
+
+    buffer [received] = '\0';
+    data += buffer;
+    total += received;
+
+  }
+  while (received > 0 && total < (int) expected);
+}
+#ifdef HAVE_LIBGNUTLS
+
+#include <gnutls/x509.h>
+
 
 static int verify_certificate_callback (gnutls_session_t);
 

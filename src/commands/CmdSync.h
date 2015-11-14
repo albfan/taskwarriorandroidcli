@@ -38,8 +38,9 @@ public:
   CmdSync ();
   int execute (std::string&);
 
-#ifdef HAVE_LIBGNUTLS
 private:
+  bool sendLocal (const std::string&, const Msg&, Msg&);
+#ifdef HAVE_LIBGNUTLS
   bool send (const std::string&, const std::string&, const std::string&, const std::string&, const enum TLSClient::trust_level, const Msg&, Msg&);
 #endif
 };
