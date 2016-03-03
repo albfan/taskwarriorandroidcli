@@ -147,6 +147,7 @@ Task::status Task::textToStatus (const std::string& input)
   else if (input[0] == 'd') return Task::deleted;
   else if (input[0] == 'r') return Task::recurring;
   else if (input[0] == 'w') return Task::waiting;
+  else if (input[0] == 'a') return Task::waiting; // It's back! Fixes 'aitin' status parse error
 
   throw format (STRING_ERROR_BAD_STATUS, input);
 }
